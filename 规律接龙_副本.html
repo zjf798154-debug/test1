@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>规律接龙 · 小学生益智小游戏</title>
+
+<!--
+================================================================================
+  规律接龙 —— 给小学生玩的益智小游戏（单文件 · 零依赖 · 可离线）
+================================================================================
+
+  【怎么玩】
+    屏幕上一串图案在“排队”，最后一个位置是问号。
+    小朋友看完规律，从下面 3 个选项里点出“接下来应该是什么”。
+
+  【为什么这样设计】
+    · 全程无需读长句子，看图案就会玩
+    · 答错不惩罚：给提示，可以一直试；错两次才公布答案并讲解
+    · 每题答完都会用一句话讲清“为什么”，把游戏变成学习
+    · 无限自动出题，玩不腻
+
+  【代码结构总览】（按文件从上到下的顺序）
+    第 0 部分  出题逻辑区  …… 5 种题型的“生成器”，全是纯函数，不碰页面
+    第 1 部分  常量与配置  …… 图案主题、年级表、文案
+    第 2 部分  小工具      …… 随机数、洗牌、取样
+    第 3 部分  出题调度    …… 按难度抽题型、生成干扰项、组装一道题
+    第 4 部分  音效        …… 用 Web Audio 现场合成，不需要任何音频文件
+    第 5 部分  界面渲染    …… 把一道题画成卡片和按钮
+    第 6 部分  交互与流程  …… 判对错、给反馈、发星星、下一关
+    第 7 部分  启动        …… 绑定按钮、开始游戏
+
+  【想改哪里？】
+    · 换图案  → 改 THEMES
+    · 调年级  → 改 GRADES
+    · 加新题型 → 在“出题逻辑区”里加一个 makeXxx() 函数，再加进 GENERATORS
+================================================================================
+-->
+
+<style>
+/* ---------- 1. 配色与基础样式：暖色 + 大圆角 + 大字号 ---------- */
+:root{
+  --bg1:#fdf3e3; --bg2:#e7f4ff;
+  --card:#ffffff; --ink:#37322b; --soft:#9a9184;
+  --line:#ece5d8;
+  --brand:#ff8f3f; --brand2:#ffbe2e;
+  --ok:#22a94b; --okbg:#e6f9ec;
+  --bad:#f4664f; --badbg:#ffeceb;
+  --shadow:0 10px 22px rgba(130,105,70,.14);
+  --r:22px;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{
+  margin:0; padding:14px 14px 26px;
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+  color:var(--ink);
+  background:linear-gradient(165deg,var(--bg1),var(--bg2));
+  min-height:100%;
+  display:flex; flex-direction:column; align-items:center;
+  user-select:none; overflow-x:hidden;
+}
+.wrap{width:min(1000px,100%); flex:1; display:flex; flex-direction:column; gap:14px}
+
+/* ---------- 顶部：星级、进度、设置 ---------- */
+.top{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+.logo{font-size:clamp(19px,3.4vw,26px); font-weight:800; letter-spacing:.5px}
+.logo small{display:block; font-size:12px; font-weight:500; color:var(--soft); letter-spacing:0}
+.spacer{flex:1}
+.chip{
+  background:#fff; border:2px solid var(--line); border-radius:999px;
+  padding:6px 14px; font-size:clamp(13px,2.4vw,16px); font-weight:700;
+  box-shadow:0 4px 10px rgba(130,105,70,.08); white-space:nowrap;
+}
+.chip b{color:var(--brand); font-size:1.15em}
+.gradelabel{font-size:clamp(13px,2.4vw,15px); font-weight:800; color:var(--soft)}
+.grades{display:flex; flex-wrap:wrap; gap:6px; justify-content:center}
+.grades button{
+  border:2px solid var(--line); background:#fff; border-radius:999px; cursor:pointer;
+  padding:7px 14px; font:inherit; font-weight:800; font-size:clamp(13px,2.4vw,16px);
+  color:var(--soft); box-shadow:0 3px 8px rgba(130,105,70,.07);
+}
+.grades button.on{background:linear-gradient(180deg,var(--brand2),var(--brand)); color:#fff; border-color:transparent; box-shadow:0 4px 0 #e07a2c}
+.icobtn{
+  width:42px; height:42px; border-radius:50%; border:2px solid var(--line); background:#fff;
+  font-size:20px; cursor:pointer; display:grid; place-items:center; box-shadow:0 4px 10px rgba(130,105,70,.08);
+}
+.icobtn.off{opacity:.45}
+
+/* ---------- 题目区 ---------- */
+.stage{
+  background:var(--card); border-radius:var(--r); box-shadow:var(--shadow);
+  padding:clamp(14px,3vw,26px); display:flex; flex-direction:column; gap:14px;
+}
+.hint{text-align:center; color:var(--soft); font-size:clamp(13px,2.4vw,16px); font-weight:600}
+.badge{
+  align-self:center; background:#fff7e8; color:#c9761a; border:2px dashed #ffd79b;
+  border-radius:999px; padding:3px 12px; font-size:clamp(11px,2vw,13px); font-weight:800;
+}
+.seq{display:flex; flex-wrap:wrap; justify-content:center; gap:clamp(6px,1.4vw,12px); min-height:110px; align-items:center}
+.card{
+  background:#fbf7ef; border:3px solid var(--line); border-radius:16px;
+  min-width:clamp(58px,11vw,84px); min-height:clamp(72px,13vw,98px);
+  padding:8px 10px; display:flex; align-items:center; justify-content:center;
+  font-size:clamp(28px,6vw,48px); line-height:1.05; text-align:center;
+  overflow-wrap:anywhere; transition:transform .18s, border-color .18s, background .18s;
+}
+.card.long{font-size:clamp(17px,3.4vw,26px); max-width:clamp(120px,22vw,190px)}
+.card.q{border-style:dashed; border-color:var(--brand); color:var(--brand); font-weight:900;
+        background:#fff8ef; animation:pulse 1.3s ease-in-out infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.07)}}
+.card.answer{background:var(--okbg); border-color:var(--ok); color:var(--ok);
+             animation:pop .4s cubic-bezier(.2,1.6,.4,1)}
+@keyframes pop{0%{transform:scale(.7)}100%{transform:scale(1)}}
+
+/* ---------- 选项区 ---------- */
+.opts{display:grid; grid-template-columns:repeat(3,1fr); gap:clamp(8px,1.8vw,14px)}
+.opt{
+  border:3px solid var(--line); background:#fff; border-radius:18px; cursor:pointer;
+  min-height:clamp(84px,15vw,116px); display:flex; align-items:center; justify-content:center;
+  font-size:clamp(28px,6vw,46px); font-family:inherit; color:var(--ink);
+  box-shadow:0 6px 0 #efe8da; transition:transform .12s, box-shadow .12s, border-color .12s;
+  padding:6px 10px; overflow-wrap:anywhere; text-align:center; line-height:1.05;
+}
+.opt.long{font-size:clamp(16px,3.2vw,24px)}
+.opt:hover{transform:translateY(-2px)}
+.opt:active{transform:translateY(3px); box-shadow:0 2px 0 #efe8da}
+.opt.right{border-color:var(--ok); background:var(--okbg); color:var(--ok); box-shadow:0 6px 0 #bfe9cc;
+           animation:pop .35s cubic-bezier(.2,1.6,.4,1)}
+.opt.wrong{border-color:var(--bad); background:var(--badbg); color:var(--bad); box-shadow:0 6px 0 #f7c9c3;
+           animation:shake .4s}
+.opt.dim{opacity:.35}
+.opt.glow{animation:glow 1s ease-in-out infinite}
+@keyframes glow{0%,100%{box-shadow:0 6px 0 #efe8da,0 0 0 0 rgba(34,169,75,.5)}
+                50%{box-shadow:0 6px 0 #efe8da,0 0 0 14px rgba(34,169,75,0)}}
+@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}
+                 40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+
+/* ---------- 反馈条 ---------- */
+.fb{
+  border-radius:16px; padding:12px 16px; font-size:clamp(14px,2.6vw,18px);
+  font-weight:700; line-height:1.5; display:none; align-items:center; gap:10px;
+}
+.fb.show{display:flex; animation:fade .25s}
+.fb.good{background:var(--okbg); color:#177a37; border:2px solid #bfe9cc}
+.fb.tip{background:#fff7e8; color:#a9680f; border:2px solid #ffd79b}
+@keyframes fade{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+.fb .ico{font-size:1.5em; line-height:1}
+
+/* ---------- 底部按钮 ---------- */
+.actions{display:flex; gap:10px; justify-content:center; flex-wrap:wrap}
+.btn{
+  border:0; border-radius:999px; padding:12px 26px; font:inherit; font-weight:800;
+  font-size:clamp(15px,2.6vw,18px); cursor:pointer; color:#fff;
+  background:linear-gradient(180deg,var(--brand2),var(--brand)); box-shadow:0 6px 0 #e07a2c;
+}
+.btn.ghost{background:#fff; color:var(--soft); box-shadow:0 6px 0 #ece5d8; border:2px solid var(--line)}
+.btn:active{transform:translateY(3px); box-shadow:none}
+.btn[hidden]{display:none}
+
+/* ---------- 庆祝遮罩 ---------- */
+.celebrate{
+  position:fixed; inset:0; background:rgba(255,244,224,.92); display:none;
+  place-items:center; z-index:20; text-align:center; padding:20px;
+}
+.celebrate.show{display:grid; animation:fade .3s}
+.celebrate .big{font-size:clamp(40px,10vw,84px)}
+.celebrate h2{margin:10px 0 4px; font-size:clamp(24px,5vw,40px); color:var(--brand)}
+.celebrate p{margin:0 0 18px; color:var(--soft); font-weight:700}
+
+/* ---------- 窄屏（手机）适配 ---------- */
+@media (max-width:430px){
+  .opts{grid-template-columns:repeat(3,1fr); gap:8px}
+  .opt{min-height:78px; border-width:2px}
+  .card{border-width:2px}
+  .logo small{display:none}
+}
+</style>
+</head>
+
+<body>
+<div class="wrap">
+
+  <!-- ============ 顶部信息条 ============ -->
+  <div class="top">
+    <div class="logo">规律接龙<small>看规律，猜下一个</small></div>
+    <div class="spacer"></div>
+    <div class="chip">⭐ <b id="stars">0</b></div>
+    <div class="chip">第 <b id="round">1</b> 关</div>
+    <button class="icobtn" id="sound" title="音效开关">🔊</button>
+  </div>
+
+  <!-- 年级选择：1—6 年级，各年级的题型和数字范围都不一样（见文件内“年级表”） -->
+  <div class="top">
+    <span class="gradelabel">年级</span>
+    <div class="grades" id="grades">
+      <button data-grade="1" class="on">一年级</button>
+      <button data-grade="2">二年级</button>
+      <button data-grade="3">三年级</button>
+      <button data-grade="4">四年级</button>
+      <button data-grade="5">五年级</button>
+      <button data-grade="6">六年级</button>
+    </div>
+  </div>
+
+  <!-- ============ 题目舞台 ============ -->
+  <div class="stage">
+    <div class="hint">看看这些图案排队的规律，猜猜下一个是什么？</div>
+    <div class="badge" id="badge">循环规律</div>
+    <div class="seq" id="seq"></div>
+    <div class="opts" id="opts"></div>
+    <div class="fb" id="fb"><span class="ico"></span><span class="txt"></span></div>
+    <div class="actions">
+      <button class="btn ghost" id="skip">换一题</button>
+      <button class="btn" id="next" hidden>下一关 →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 里程碑庆祝 ============ -->
+<div class="celebrate" id="celebrate">
+  <div>
+    <div class="big">🎉⭐🎈</div>
+    <h2 id="celebTitle">太棒了！</h2>
+    <p id="celebText">你已经答对 5 题啦</p>
+    <button class="btn" id="celebOk">继续玩 →</button>
+  </div>
+</div>
+
+<script>
+/* ==========================================================================
+   第 0 部分：出题逻辑区（纯函数，不接触页面）
+   --------------------------------------------------------------------------
+   每个 makeXxx() 都返回同一结构的一道题：
+     {
+       seq:     [...要展示的卡片文字]，最后一张由界面补上“?”
+       answer:  "正确答案"
+       explain: "为什么" 的一句话讲解
+       type:    "题型名"（显示在题目上方的徽章里）
+     }
+   这样写的好处：出题逻辑和界面完全分开 —— 换皮肤不用动逻辑，
+   也因为它们是纯函数，可以直接用 Node 跑测试验证成千上万道题是否合法。
+   ========== 出题逻辑区 开始 ========== */
+
+// ---- 5 组图案主题（每题只用一个主题，保证选项“同类、看起来像”，不会是送分题）----
+var THEMES = [
+  ["🍎","🍌","🍇","🍓","🍊","🍉"],   // 水果
+  ["🐶","🐱","🐰","🐼","🦊","🐸"],   // 动物
+  ["🔴","🔵","🟢","🟡","🟣","🟠"],   // 彩色圆点
+  ["🟥","🟦","🟩","🟨","🟪","🟧"],   // 彩色方块
+  ["⭐","🌙","☀️","☁️","🌈","❄️"]    // 天空
+];
+
+/* ---------- 出题器内部用到的两个小工具 ---------- */
+function f(rnd, n){ return Math.floor(rnd() * n); }               // 0 ~ n-1 的随机整数
+function seqArith(a0, d, n){                                      // 等差数列（d 可以是负数）
+  var t = [a0];
+  for (var i = 1; i < n; i++) t.push(t[i-1] + d);
+  return t;
+}
+function seqGeo(a0, m, n){                                        // 等比数列
+  var t = [a0];
+  for (var i = 1; i < n; i++) t.push(t[i-1] * m);
+  return t;
+}
+
+/* ==============================================================
+   题型 1：循环规律
+   一年级：AB（🍎🍌🍎🍌）
+   三年级起：可能出现 ABC，以及 AABB 这种“带重复”的单元
+   ============================================================== */
+function makeCycle(grade, rnd){
+  var theme = pick(THEMES, rnd);
+  var unitLen = grade <= 2 ? 2 : pick([2,3], rnd);
+  var unit = sample(theme, unitLen, rnd);
+  if (grade >= 3 && rnd() < 0.35) unit = [unit[0], unit[0], unit[1], unit[1]];
+
+  var k = unit.length;
+  // 展示“两轮多一点”，规律足够明显；但最多 7 张，避免 AABB 这种长单元把屏幕铺满
+  var shown = Math.min(k * 2 + 1, 7);
+  var seq = [];
+  for (var i = 0; i < shown; i++) seq.push(unit[i % k]);
+  var answer = unit[shown % k];
+
+  return {
+    seq: seq,
+    answer: answer,
+    explain: "每 " + k + " 个一循环：" + unit.join("") + " 反复出现，所以下一个是 " + answer + "。",
+    type: "循环规律",
+    theme: theme, unit: unit
+  };
+}
+
+/* ==============================================================
+   题型 2：叠加规律（四年级以上）
+   奇数位走一套循环，偶数位走另一套循环，两套规律叠在一起。
+   这是“循环规律”的进阶版，能看出孩子是否真的在分层思考。
+   ============================================================== */
+function makeLayered(grade, rnd){
+  var theme = pick(THEMES, rnd);
+  var odd  = sample(theme, 3, rnd);                                   // 奇数位：3 个一轮
+  var rest = theme.filter(function(x){ return odd.indexOf(x) < 0; });
+  var evenLen = grade >= 6 ? 2 : 1;                                   // 六年级偶数位也开始轮换
+  var even = sample(rest.length >= evenLen ? rest : theme, evenLen, rnd);
+
+  function item(i){
+    if (i % 2 === 0) return odd[(i / 2) % odd.length];                // 0,2,4,6…
+    return even[Math.floor(i / 2) % even.length];                     // 1,3,5…
+  }
+  var shown = 6, seq = [];
+  for (var i = 0; i < shown; i++) seq.push(item(i));
+  var answer = item(shown);
+
+  var evenDesc = (even.length === 1) ? ("偶数位一直是 " + even[0])
+                                     : ("偶数位在循环：" + even.join(""));
+  return {
+    seq: seq,
+    answer: answer,
+    explain: "奇数位在循环：" + odd.join("") + "；" + evenDesc + "，所以下一个是 " + answer + "。",
+    type: "叠加规律",
+    theme: theme
+  };
+}
+
+/* ==============================================================
+   题型 3：数量递增
+   一年级 +1；三年级 +2；四年级 +2；五、六年级翻倍（1 → 2 → 4 → 8）
+   ============================================================== */
+function makeGrowing(grade, rnd){
+  var theme = pick(THEMES, rnd);
+  var icon  = pick(theme, rnd);
+  var counts, how;
+  if (grade <= 1){ counts = [1,2,3];       how = "每一格都比上一格多 1 个"; }
+  else if (grade === 2){ counts = [1,2,3]; how = "每一格都比上一格多 1 个"; }
+  else if (grade === 3){ counts = [1,3,5]; how = "每一格都比上一格多 2 个"; }
+  else if (grade === 4){ counts = [2,4,6]; how = "每一格都比上一格多 2 个"; }
+  else { counts = [1,2,4];                 how = "每一格都是上一格的 2 倍"; }
+
+  var step = counts[1] - counts[0];
+  var nextCount = grade >= 5 ? counts[2] * 2 : counts[2] + step;
+  var seq = counts.map(function(c){ return repeat(icon, c); });
+
+  return {
+    seq: seq,
+    answer: repeat(icon, nextCount),
+    explain: how + "，所以接下来是 " + nextCount + " 个。",
+    type: "数量递增",
+    theme: theme, icon: icon, answerCount: nextCount, step: step
+  };
+}
+
+/* ==============================================================
+   题型 4：数字数列
+   每个年级一张“题型菜单”，菜单里的函数各自造出一串数。
+   难度完全由这份菜单控制 —— 想调整某年级的难度，只改这一处。
+   ============================================================== */
+var NUMBER_KINDS = {
+  // 一年级：20 以内加减
+  1: [ function(rnd){ return { terms: seqArith(1 + f(rnd,5),  1, 4), how: "每次都加 1" }; },
+       function(rnd){ return { terms: seqArith(1 + f(rnd,6),  2, 4), how: "每次都加 2" }; },
+       function(rnd){ return { terms: seqArith(8 + f(rnd,5), -1, 4), how: "每次都减 1" }; },
+       function(rnd){ return { terms: seqArith(10 + f(rnd,7),-2, 4), how: "每次都减 2" }; } ],
+
+  // 二年级：100 以内加减 + 2 的乘法 + 整十数
+  2: [ function(rnd){ var d = pick([2,3,4,5], rnd); return { terms: seqArith(1 + f(rnd,6), d, 4), how: "每次都加 " + d }; },
+       function(rnd){ var d = pick([2,3,4,5], rnd); return { terms: seqArith(20 + f(rnd,11), -d, 4), how: "每次都减 " + d }; },
+       function(rnd){ return { terms: seqGeo(1 + f(rnd,5), 2, 4), how: "每次都是前一个的 2 倍" }; },
+       function(rnd){ return { terms: seqArith(1 + f(rnd,6), 10, 4), how: "每次都加 10" }; } ],
+
+  // 三年级：多位数加减、倍数、平方数
+  3: [ function(rnd){ var d = pick([3,4,5,6,7,8,9], rnd); return { terms: seqArith(2 + f(rnd,8), d, 4), how: "每次都加 " + d }; },
+       function(rnd){ var d = pick([3,4,5,6,7,8,9], rnd); return { terms: seqArith(40 + f(rnd,21), -d, 4), how: "每次都减 " + d }; },
+       function(rnd){ return { terms: seqGeo(3 + f(rnd,7), 2, 4), how: "每次都是前一个的 2 倍" }; },
+       function(rnd){ return { terms: seqGeo(1 + f(rnd,3), 3, 4), how: "每次都是前一个的 3 倍" }; },
+       function(rnd){ return { terms: [4,9,16,25], how: "平方数：2×2、3×3、4×4、5×5" }; } ],
+
+  // 四年级：大数加减、倍数、平方数、差在变大
+  4: [ function(rnd){ var d = pick([6,7,8,9,10,11,12], rnd); return { terms: seqArith(1 + f(rnd,5), d, 4), how: "每次都加 " + d }; },
+       function(rnd){ var d = pick([4,6,8,9,12], rnd);           return { terms: seqArith(60 + f(rnd,31), -d, 4), how: "每次都减 " + d }; },
+       function(rnd){ return { terms: seqGeo(4 + f(rnd,6), 2, 4), how: "每次都是前一个的 2 倍" }; },
+       function(rnd){ return { terms: seqGeo(2 + f(rnd,3), 3, 4), how: "每次都是前一个的 3 倍" }; },
+       function(rnd){ return { terms: [9,16,25,36],              how: "平方数：3×3、4×4、5×5、6×6" }; },
+       function(rnd){ var a = 1 + f(rnd,3); var t = [a]; var g = 1;
+                      for (var i = 1; i < 4; i++){ t.push(t[i-1] + g); g++; }
+                      return { terms: t, how: "加的数一次比一次多 1：+1、+2、+3" }; } ],
+
+  // 五年级：差在变大、三角形数、斐波那契、×2+1 递推
+  5: [ function(rnd){ var a = 2 + f(rnd,3); var t = [a]; var g = 2;
+                      for (var i = 1; i < 4; i++){ t.push(t[i-1] + g); g++; }
+                      return { terms: t, how: "加的数在变大：+2、+3、+4" }; },
+       function(rnd){ return { terms: [1,3,6,10], how: "相邻两数的差一次比一次多 1：+2、+3、+4" }; },
+       function(rnd){ var a = 1 + f(rnd,3), b = a + 1 + f(rnd,2);
+                      return { terms: [a, b, a+b, a+2*b], how: "每个数都是它前面两个数的和" }; },
+       function(rnd){ var a = 3 + f(rnd,4); var t = [a];
+                      for (var i = 1; i < 4; i++) t.push(t[i-1] * 2 + 1);
+                      return { terms: t, how: "每个数都是前一个数乘 2 再加 1" }; },
+       function(rnd){ var d = pick([6,7,8,9,10,11,12], rnd); return { terms: seqArith(80 + f(rnd,41), -d, 4), how: "每次都减 " + d }; } ],
+
+  // 六年级：斐波那契、交错数列、交替倍率、三角数
+  6: [ function(rnd){ var a = 4 + f(rnd,5), b = 5 + f(rnd,5);
+                      return { terms: [a, b, a+b, a+2*b], how: "每个数都是它前面两个数的和" }; },
+       function(rnd){ var a = 1 + f(rnd,3),  d1 = pick([2,3,4], rnd);
+                      var b = 10 + f(rnd,10), d2 = pick([5,10,20], rnd);
+                      return { terms: [a, b, a+d1, b+d2, a+2*d1, b+2*d2], show: 5,
+                               how: "奇数位每次加 " + d1 + "，偶数位每次加 " + d2 }; },
+       function(rnd){ var a = 1 + f(rnd,3);
+                      return { terms: [a, a*2, a*6, a*12, a*36], show: 4,
+                               how: "乘的数在 2 和 3 之间交替：×2、×3、×2、×3" }; },
+       function(rnd){ var a = 3 + f(rnd,4); var t = [a]; var g = 3;
+                      for (var i = 1; i < 4; i++){ t.push(t[i-1] + g); g++; }
+                      return { terms: t, how: "加的数在变大：+3、+4、+5" }; },
+       function(rnd){ return { terms: [3,6,10,15], how: "相邻两数的差一次比一次多 1：+3、+4、+5" }; } ]
+};
+
+function makeNumber(grade, rnd){
+  var kinds = NUMBER_KINDS[grade] || NUMBER_KINDS[2];
+  var built = pick(kinds, rnd)(rnd);          // 每张“菜单”里的每一项都是一个造题函数
+  var terms = built.terms;
+  var show  = built.show || 3;                // 展示前 show 个数，问第 show+1 个
+  var answer = String(terms[show]);
+
+  return {
+    seq: terms.slice(0, show).map(String),
+    answer: answer,
+    explain: built.how + "：" + terms.join(" → ") + "。",
+    type: "数字数列",
+    terms: terms, show: show
+  };
+}
+
+/* ==============================================================
+   题型 5：移动规律
+   一年级：3 格、每次走 1 格
+   三、四年级：可能 4 格，或每次跳 2 格
+   五、六年级：可能一次跳 2~3 格，还会“走到头往回走”
+   ============================================================== */
+function makePosition(grade, rnd){
+  var empty = "⚪";
+  var ball  = pick(["🔴","🟠","🔵","🟣"], rnd);
+  var cells, step, bounce = false;
+
+  if (grade <= 2){
+    cells = 3; step = 1;                                   // 一年级：稳稳地一格一格走
+  } else {
+    cells = (rnd() < 0.5 ? 3 : 4);
+    // 候选步长必须满足两个条件，否则题目会“不合理”：
+    //   ① 步长 < 格子数  —— 否则小球原地不动（跳过头又退回原位）
+    //   ② (步长×2) 不能被格子数整除 —— 否则小球只在两个格子间来回，看起来像“跳着走”
+    var cands = [1,2,3].filter(function(st){ return st < cells && (st * 2) % cells !== 0; });
+    if (grade <= 4) cands = cands.filter(function(st){ return st <= 2; });
+    if (!cands.length) cands = [1];
+    step = pick(cands, rnd);
+    if (grade >= 5) bounce = rnd() < 0.35;                 // 五、六年级才会“走到头往回走”
+  }
+
+  function frame(pos){
+    var s = "";
+    for (var j = 0; j < cells; j++) s += (j === pos ? ball : empty);
+    return s;
+  }
+  function posOf(i){
+    if (bounce){                                  // 走到最后一格就往回走
+      var span = 2 * (cells - 1), m = i % span;
+      return (m < cells) ? m : (span - m);
+    }
+    return (i * step) % cells;
+  }
+  var shown = cells + 2, seq = [];
+  for (var i = 0; i < shown; i++) seq.push(frame(posOf(i)));
+  var answer = frame(posOf(shown));
+
+  var how;
+  if (bounce)      how = "小球走到最后一格就往回走";
+  else if (step > 1) how = "小球每次往前跳 " + step + " 格，走过头就回到第一格";
+  else             how = "小球一格一格地往前走，走完最后一格就回到第一格";
+
+  return {
+    seq: seq,
+    answer: answer,
+    explain: how + "，所以下一个是 " + answer + "。",
+    type: "移动规律",
+    cells: cells, ballChar: ball, emptyChar: empty
+  };
+}
+
+/* ==============================================================
+   年级表：每个年级能出哪些题型、各自的出现频率（w 越大越常出现）
+   想给某个年级加新题型，写好 makeXxx() 后在这里登记一行即可。
+   ============================================================== */
+var GRADES = {
+  1: [ {make: makeCycle,    w: 4}, {make: makeGrowing,  w: 3}, {make: makeNumber, w: 4}, {make: makePosition, w: 2} ],
+  2: [ {make: makeCycle,    w: 4}, {make: makeGrowing,  w: 2}, {make: makeNumber, w: 4}, {make: makePosition, w: 2} ],
+  3: [ {make: makeCycle,    w: 3}, {make: makeGrowing,  w: 2}, {make: makeNumber, w: 5}, {make: makePosition, w: 3} ],
+  4: [ {make: makeCycle,    w: 2}, {make: makeGrowing,  w: 2}, {make: makeNumber, w: 5}, {make: makePosition, w: 2}, {make: makeLayered, w: 2} ],
+  5: [ {make: makeCycle,    w: 2}, {make: makeGrowing,  w: 1}, {make: makeNumber, w: 5}, {make: makePosition, w: 2}, {make: makeLayered, w: 3} ],
+  6: [ {make: makeCycle,    w: 1}, {make: makeGrowing,  w: 1}, {make: makeNumber, w: 5}, {make: makePosition, w: 2}, {make: makeLayered, w: 4} ]
+};
+/* ========== 出题逻辑区 结束 ========== */
+
+
+/* ==========================================================================
+   第 1 部分：出题调度
+   --------------------------------------------------------------------------
+   把“按难度选题型 → 生成题目 → 造 3 个选项 → 打乱顺序”串起来。
+   ========================================================================== */
+
+// 生成两个“看起来很合理”的错误选项：错得有意思，才叫益智题
+function makeDistractors(q, grade, rnd){
+  var out = [];
+
+  if (q.type === "循环规律" || q.type === "叠加规律"){
+    // 优先用“序列里出现过、但不是答案”的图案：这是最容易骗到孩子的干扰项
+    var inSeq  = unique(q.seq.filter(function(x){ return x !== q.answer; }));
+    var others = q.theme.filter(function(x){ return x !== q.answer; });
+    out = shuffle(inSeq, rnd).concat(shuffle(others, rnd));
+
+  } else if (q.type === "数量递增"){
+    // 比正确答案多一个 / 少一个（都是孩子最容易选错的数量）
+    var n = q.answerCount;
+    out = [repeat(q.icon, n - 1), repeat(q.icon, n + 1), repeat(q.icon, n - q.step)];
+
+  } else if (q.type === "数字数列"){
+    // 数字题：答案附近 ±1~±3，再加上一个“只盯着其中一套规律”的陷阱值
+    var a = parseInt(q.answer, 10);
+    out = shuffle([a+1, a-1, a+2, a-2, a+3, a-3], rnd).filter(function(v){ return v > 0 && v !== a; }).map(String);
+    if (q.terms && q.terms.length - 1 >= q.show && q.show >= 4){
+      // 交错数列专用陷阱：只顺着“同一组”往前推得到的数
+      var trap = q.terms[q.show-2] + (q.terms[q.show-2] - q.terms[q.show-4]);
+      if (trap > 0 && trap !== a) out.unshift(String(trap));
+    }
+
+  } else {
+    // 移动规律：把小球放到别的格子里
+    for (var p = 0; p < q.cells; p++){
+      var t = "";
+      for (var j = 0; j < q.cells; j++) t += (j === p ? q.ballChar : q.emptyChar);
+      out.push(t);
+    }
+  }
+
+  // 去重 → 去掉与答案相同的 → 取 2 个；不够就用通用图案兜底，保证一定有 3 个不同选项
+  var pool = unique(out).filter(function(x){ return x !== q.answer; });
+  var fallback = ["🍎","🍌","🍇","🐶","⭐"];
+  while (pool.length < 2) pool.push(pick(fallback, rnd));
+  return pool.slice(0, 2);
+}
+
+// 组装一道完整的题：题目 + 3 个选项（含正确答案，顺序打乱）
+function makeQuestion(grade, rnd){
+  // 按权重从“年级表”里抽一个题型
+  var table = GRADES[grade] || GRADES[3];
+  var total = table.reduce(function(sum, x){ return sum + x.w; }, 0);
+  var r = rnd() * total, chosen = table[0].make;
+  for (var i = 0; i < table.length; i++){
+    if (r < table[i].w){ chosen = table[i].make; break; }
+    r -= table[i].w;
+  }
+
+  var q = chosen(grade, rnd);
+
+  // 双重保险：选项必须互不相同、必须包含正确答案
+  var wrongs = unique(makeDistractors(q, grade, rnd)).filter(function(x){ return x !== q.answer; });
+  var fallback = unique(q.theme || ["🍎","🍌","🍇"]).filter(function(x){ return x !== q.answer; });
+  while (wrongs.length < 2 && fallback.length){
+    var fo = pick(fallback, rnd);
+    if (wrongs.indexOf(fo) < 0) wrongs.push(fo); else break;
+  }
+  while (wrongs.length < 2) wrongs.push(pick(["🍎","🍌","🍇"], rnd));
+
+  var options = shuffle([q.answer].concat(wrongs.slice(0, 2)), rnd);
+  q.options = options;
+  q.answerIndex = options.indexOf(q.answer);
+  q.key = q.type + "|" + q.seq.join(",") + "|" + q.answer;   // 用于防止连续出同一题
+  return q;
+}
+
+function pick(arr, rnd){ return arr[Math.floor(rnd() * arr.length)]; }
+
+// 洗牌（Fisher–Yates），rnd 可注入，方便测试时用固定随机种子
+function shuffle(arr, rnd){
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--){
+    var j = Math.floor(rnd() * (i + 1));
+    var t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+// 从数组里取 n 个不重复元素
+function sample(arr, n, rnd){
+  var s = shuffle(arr, rnd);
+  var out = [];
+  for (var i = 0; i < s.length && out.length < n; i++) out.push(s[i]);
+  while (out.length < n) out.push(s[out.length % s.length]);   // 元素不够就允许重复
+  return out;
+}
+function unique(arr){ return arr.filter(function(v,i){ return arr.indexOf(v) === i; }); }
+function repeat(s, n){ var o = ""; for (var i = 0; i < n; i++) o += s; return o; }
+
+
+/* ==========================================================================
+   第 3 部分：音效（Web Audio 现场合成）
+   --------------------------------------------------------------------------
+   不加载任何 mp3，几个振荡器就够用：
+     · 答对 → 三音上行，明亮
+     · 答错 → 一个低音，柔和（不能吓到孩子）
+     · 里程碑 → 四音琶音
+   ========================================================================== */
+var AC = null, soundOn = true;
+function audio(){
+  if (!AC){ try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch(e){ AC = null; } }
+  return AC;
+}
+function tone(freq, dur, delay, vol, type){
+  if (!soundOn) return;
+  var ac = audio(); if (!ac) return;
+  var t0 = ac.currentTime + (delay || 0);
+  var osc = ac.createOscillator(), g = ac.createGain();
+  osc.type = type || "sine";
+  osc.frequency.setValueAtTime(freq, t0);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol || 0.18, t0 + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g); g.connect(ac.destination);
+  osc.start(t0); osc.stop(t0 + dur + 0.05);
+}
+function sfxRight(){ tone(659,0.12,0,0.16); tone(880,0.12,0.10,0.16); tone(1319,0.22,0.20,0.14); }
+function sfxWrong(){ tone(196,0.28,0,0.13,"triangle"); }
+function sfxTap(){ tone(520,0.06,0,0.10); }
+function sfxWin(){ [523,659,784,1046].forEach(function(f,i){ tone(f,0.18,i*0.09,0.15); }); }
+
+
+/* ==========================================================================
+   第 4 部分：界面渲染
+   --------------------------------------------------------------------------
+   把一“道”数据变成 DOM：序列卡片 + 3 个选项按钮。
+   ========================================================================== */
+var $ = function(id){ return document.getElementById(id); };
+var seqEl = $("seq"), optsEl = $("opts"), fbEl = $("fb"), badgeEl = $("badge");
+var state = { grade: 1, round: 1, stars: 0, streak: 0, wrong: 0, locked: false, q: null, lastKey: "" };
+
+// 数“看得见的图形个数”：emoji / 变音符号 / ZWJ 组合都要算作 1 个，
+// 否则像 "☀️" 这种会被误算成 2 个，字号判断就会出错。
+function glyphLen(text){
+  var t = String(text);
+  try {
+    if (window.Intl && Intl.Segmenter){          // 现代浏览器：按字素簇切分，最准确
+      var seg = new Intl.Segmenter("zh", { granularity: "grapheme" });
+      var n = 0;
+      for (var piece of seg.segment(t)) n++;
+      return n;
+    }
+  } catch (e) { /* 老浏览器走下面的兜底算法 */ }
+  return Array.from(t).filter(function(c){ return c !== "\uFE0F" && c !== "\u200D"; }).length;
+}
+// 根据图形个数决定字号：像“🔺🔺🔺🔺”这种长内容要缩小，否则会撑破卡片
+function sizeClass(text){
+  return glyphLen(text) >= 3 ? " long" : "";
+}
+
+// 画序列；最后一张是问号卡
+function renderSeq(q){
+  seqEl.innerHTML = "";
+  q.seq.forEach(function(txt){
+    var d = document.createElement("div");
+    d.className = "card" + sizeClass(txt);
+    d.textContent = txt;
+    seqEl.appendChild(d);
+  });
+  var qCard = document.createElement("div");
+  qCard.className = "card q" + sizeClass(q.answer);
+  qCard.id = "qcard";
+  qCard.textContent = "?";
+  seqEl.appendChild(qCard);
+}
+
+// 画选项按钮
+function renderOpts(q){
+  optsEl.innerHTML = "";
+  q.options.forEach(function(txt, i){
+    var b = document.createElement("button");
+    b.className = "opt" + sizeClass(txt);
+    b.type = "button";
+    b.textContent = txt;
+    b.dataset.index = i;
+    b.addEventListener("click", function(){ answer(i); });
+    optsEl.appendChild(b);
+  });
+}
+
+// 显示反馈条：good=答对（绿），tip=提示（黄）
+function showFb(kind, text){
+  var ico = kind === "good" ? "✅" : "💡";
+  fbEl.className = "fb show " + kind;
+  fbEl.querySelector(".ico").textContent = ico;
+  fbEl.querySelector(".txt").textContent = text;
+}
+function hideFb(){ fbEl.className = "fb"; }
+
+
+/* ==========================================================================
+   第 5 部分：交互与流程
+   ========================================================================== */
+
+// 出一道新题并铺到页面上
+function newRound(){
+  state.locked = false;
+  state.wrong = 0;
+  hideFb();
+  $("next").hidden = true;
+
+  var q, guard = 0;
+  do { q = makeQuestion(state.grade, Math.random); guard++; }
+  while (q.key === state.lastKey && guard < 30);   // 避免连续两次同一题
+  state.lastKey = q.key;
+  state.q = q;
+
+  badgeEl.textContent = q.type;
+  renderSeq(q);
+  renderOpts(q);
+}
+
+// 点选项
+function answer(i){
+  if (state.locked) return;
+  var q = state.q;
+  var btns = optsEl.querySelectorAll(".opt");
+  var btn = btns[i];
+
+  if (i === q.answerIndex){
+    // ---------- 答对 ----------
+    state.locked = true;
+    btn.classList.add("right");
+    sfxRight();
+    var qc = $("qcard");
+    if (qc){
+      qc.className = "card answer" + sizeClass(q.answer);
+      qc.textContent = q.answer;
+    }
+    state.stars++;
+    state.streak++;
+    $("stars").textContent = state.stars;
+    showFb("good", "答对啦！" + q.explain);
+    $("next").hidden = false;
+
+    // 每答对 5 题，庆祝一次
+    if (state.streak > 0 && state.streak % 5 === 0){
+      setTimeout(function(){
+        sfxWin();
+        $("celebTitle").textContent = "太棒了！";
+        $("celebText").textContent = "你连着答对了 " + state.streak + " 题，得到 " + state.stars + " 颗星";
+        $("celebrate").classList.add("show");
+      }, 380);
+    } else {
+      // 没到里程碑就 1.7 秒后自动进入下一关，节奏更顺
+      setTimeout(function(){ if (state.locked) nextRound(); }, 1700);
+    }
+  } else {
+    // ---------- 答错：不惩罚，先给提示 ----------
+    btn.classList.add("wrong");
+    sfxWrong();
+    state.wrong++;
+    state.streak = 0;
+    setTimeout(function(){ btn.classList.remove("wrong"); }, 420);
+
+    if (state.wrong === 1){
+      showFb("tip", "没关系，再试一次～ 小提示：" + shortHint(q));
+    } else {
+      // 错两次就把答案亮出来，并讲清楚原因，避免孩子卡住失去兴趣
+      state.locked = true;
+      btns[q.answerIndex].classList.add("glow");
+      btns.forEach(function(b, k){ if (k !== q.answerIndex) b.classList.add("dim"); });
+      showFb("tip", "我们一起看：" + q.explain);
+      $("next").hidden = false;
+      sfxWrong();
+    }
+  }
+}
+
+// 只给“半句提示”，不直接把答案说破
+function shortHint(q){
+  if (q.type === "循环规律") return "看看最前面几个是不是又重复出现了？";
+  if (q.type === "数量递增") return "数一数每一格里有几个？";
+  if (q.type === "数字数列") return "算一算相邻两个数相差多少？";
+  return "小球是不是一格一格地往前走？";
+}
+
+// 下一关
+function nextRound(){
+  state.round++;
+  $("round").textContent = state.round;
+  newRound();
+}
+
+// 换一题（跳过，不算错也不扣星）
+function skip(){
+  sfxTap();
+  newRound();
+}
+
+// 切换年级：换题型的范围，并重新开一道题
+function setGrade(g){
+  state.grade = g;
+  var bs = $("grades").querySelectorAll("button");
+  for (var i = 0; i < bs.length; i++)
+    bs[i].classList.toggle("on", Number(bs[i].dataset.grade) === g);
+  sfxWin();              // 换年级给一个“升级”音效，让孩子有仪式感
+  state.round = 1;
+  $("round").textContent = 1;
+  newRound();
+}
+
+// 键盘：1/2/3 选答案，空格/回车进入下一关（方便投屏上课用）
+document.addEventListener("keydown", function(e){
+  if (e.key >= "1" && e.key <= "3"){ answer(Number(e.key) - 1); }
+  else if (e.key === " " || e.key === "Enter"){ if (!$("next").hidden) nextRound(); }
+  else if (e.key === "s"){ skip(); }
+});
+
+
+/* ==========================================================================
+   第 6 部分：启动
+   ========================================================================== */
+$("next").addEventListener("click", nextRound);
+$("skip").addEventListener("click", skip);
+$("celebOk").addEventListener("click", function(){
+  $("celebrate").classList.remove("show");
+  nextRound();
+});
+$("sound").addEventListener("click", function(){
+  soundOn = !soundOn;
+  this.textContent = soundOn ? "🔊" : "🔇";
+  this.classList.toggle("off", !soundOn);
+  if (soundOn) sfxTap();
+});
+$("grades").addEventListener("click", function(e){
+  var b = e.target.closest("button[data-grade]");
+  if (b) setGrade(Number(b.dataset.grade));
+});
+
+newRound();   // 开局
+</script>
+</body>
+</html>
